@@ -11,29 +11,8 @@
 
 /*
   \class GateThermalActor
-  \author vesna.cuplov@gmail.com
   \author fsmekens@gmail.com
   \brief Class GateThermalActor : This actor produces voxelised images of the heat diffusion in tissue.
-
-                                                                    absorption map        heat diffusion map
-         laser                _________                               _________              _________
-         optical photons     |         |                             |         |            |         |
-         ~~~~~~~>            |         |    GATE                     |         |            |   xx    |
-         ~~~~~~~>            | phantom |    Simulation Results ==>   |   xx    |     +      |  xxxx   |
-         ~~~~~~~>            |         |    (voxelised images)       |   xx    |            |  xxxx   |
-         ~~~~~~~>            |         |                             |         |            |   xx    |
-                             |_________|                             |_________|            |_________|
-
-
-  Parameters of the simulation given by the User in the macro:
-	- setDiffusivity: tissue thermal diffusivity in mm2/s
-	- setTime: diffusion time in s
-	- setBloodPerfusionRate: blood perfusion rate in s-1 for the advection term
-	- setBloodDensity: blood density (kg/m3)
-	- setBloodHeatCapacity: blood heat capacity kJ/(kg C)
-	- setTissueDensity: tissue density (kg/m3)
-	- setTissueHeatCapacity: tissue heat capacity kJ/(kg C)
-	- OPTIONAL: setSimulationScale to get more fluence.
 */
 
 #include <G4VoxelLimits.hh>
@@ -61,42 +40,19 @@ GateFSThermalActor::GateFSThermalActor(G4String name, G4int depth):
   mUserRelaxationTime = -1.0;
   mIsDiffusionActivated = false;
   mIsPerfusionByMaterial = false;
-  mCropSize = 5;
-  
   mIsPerfusionActivated = false;
   mIsPerfusionByMaterial = false;
   mIsPerfusionByConstant = false;
   mIsPerfusionByImage = false;
+  mIsMeasurementActivated = false;
+  mMeasurementFilename = "";
   mPerfusionRatio = 0.99;
   mUserPerfusionImageName = "";
   mUserBloodPerfusionRate = 0.0;
   mUserBloodDensity = -1.0;
   mUserBloodHeatCapacity = -1.0;
   mUserTissueHeatCapacity = -1.0;
-  mMeasurementFilename = "";
-  mIsMeasurementActivated = false;
 
-  mITKfloatReaderFilter = FloatReaderType::New();
-  mITKdoubleReaderFilter = DoubleReaderType::New();
-  mITKfloatDuplicatorFilter = FloatDuplicatorType::New();
-  mITKdoubleDuplicatorFilter = DoubleDuplicatorType::New();
-  mITKmultiplyImageFilter = MultiplyFilterType::New();
-  mITKaddImageFilter = AddImageFilterType::New();
-  mITKsubtractImageFilter = SubtractImageFilterType::New();
-  mITKmaxImageFilter = MaxImageFilterType::New();
-  mITKgaussianFilterX = GaussianFilterType::New();
-  mITKgaussianFilterY = GaussianFilterType::New();
-  mITKgaussianFilterZ = GaussianFilterType::New();
-  mITKgaussianFilterX->SetDirection(0);
-  mITKgaussianFilterY->SetDirection(1);
-  mITKgaussianFilterZ->SetDirection(2);
-  mITKgaussianFilterX->SetOrder(GaussianFilterType::ZeroOrder);
-  mITKgaussianFilterY->SetOrder(GaussianFilterType::ZeroOrder);
-  mITKgaussianFilterZ->SetOrder(GaussianFilterType::ZeroOrder);
-  mITKgaussianFilterX->SetNormalizeAcrossScale(false);
-  mITKgaussianFilterY->SetNormalizeAcrossScale(false);
-  mITKgaussianFilterZ->SetNormalizeAcrossScale(false);
-  
   pMessenger = new GateFSThermalActorMessenger(this);
   GateDebugMessageDec("Actor",4,"GateFSThermalActor() -- end"<<G4endl);
 }
@@ -151,10 +107,9 @@ GateFSThermalActor::~GateFSThermalActor()  {
 
 //-----------------------------------------------------------------------------
 /// Constructor
-void GateFSThermalActor::Construct() {
-
+void GateFSThermalActor::Construct()
+{
   GateDebugMessageInc("Actor", 4, "GateFSThermalActor -- Construct - begin" << G4endl);
-
   GateVImageActor::Construct();
 
   // Record the stepHitType
@@ -162,7 +117,7 @@ void GateFSThermalActor::Construct() {
 
   // Enable callbacks
   EnableBeginOfRunAction(true);
-  EnableEndOfRunAction(true); // for save
+  EnableEndOfRunAction(true);
   EnableBeginOfEventAction(true);
   EnableEndOfEventAction(true);
   EnablePreUserTrackingAction(true);
@@ -170,7 +125,8 @@ void GateFSThermalActor::Construct() {
 
   // Output Filenames
   mAbsorptionFilename = G4String(removeExtension(mSaveFilename))+"-AbsorptionMap."+G4String(getExtension(mSaveFilename));
-  mHeatDiffusionFilename = G4String(removeExtension(mSaveFilename))+"-HeatDiffusionMap."+G4String(getExtension(mSaveFilename));
+  mHeatAbsorptionFilename = G4String(removeExtension(mSaveFilename))+"-HeatAbsorptionMap."+G4String(getExtension(mSaveFilename));
+  mHeatRelaxationFilename = G4String(removeExtension(mSaveFilename))+"-HeatRelaxationMap."+G4String(getExtension(mSaveFilename));
 
   // Set origin, transform, flag
   SetOriginTransformAndFlagToImage(mAbsorptionImage);
@@ -180,29 +136,22 @@ void GateFSThermalActor::Construct() {
   mAbsorptionImage.Allocate();
   mAbsorptionImage.SetFilename(mAbsorptionFilename);
 
-  // initialize ITK energy map from actor energy map
-  GateImageDouble *test = dynamic_cast<GateImageDouble *>(&(mAbsorptionImage.GetValueImage()));
-  mITKdoubleDuplicatorFilter->SetInputImage(ConvertEnergyImageToITKImage(test));
-  mITKdoubleDuplicatorFilter->Update();
-  mITKenergyMap = mITKdoubleDuplicatorFilter->GetOutput();
-  mITKenergyMap->DisconnectPipeline();
+  // initialize ITK heat map from actor energy map
+  GateImageDouble *energyMap = dynamic_cast<GateImageDouble *>(&(mAbsorptionImage.GetValueImage()));
+  DoubleDuplicatorType::Pointer doubleDuplicatorFilter = DoubleDuplicatorType::New();
+  doubleDuplicatorFilter->SetInputImage(ConvertGateToITKImage_double(energyMap));
+  doubleDuplicatorFilter->Update();
+  mITKheatMap = doubleDuplicatorFilter->GetOutput();
+  mITKheatMap->DisconnectPipeline();
   
-  if(mIsMeasurementActivated) { ReadMeasurementFile(mITKenergyMap); }
+  if(mIsMeasurementActivated) { ReadMeasurementFile(mITKheatMap); }
   
   // construct diffusion masks
-  // FS WARNING - needs a voxelised volume as attached volume
   GateVImageVolume *gateVoxelisedMap = dynamic_cast<GateVImageVolume *>(GetVolume());
-  if(!gateVoxelisedMap)
-  {
-    GateError("Error: in its actual version, only voxelised volume can be used as attached volume.");
-  }
-  else
-  {
-    ConstructRegionMasks(gateVoxelisedMap);
-  }
+  if(!gateVoxelisedMap) { GateError("Error: in its actual version, only voxelised volume can be used as attached volume."); }
+  else { ConstructRegionMasks(gateVoxelisedMap); }
 
-  mTimeStart = GateApplicationMgr::GetInstance()->GetTimeStart();
-  mCurrentTime = mTimeStart;
+  mCurrentTime = GateApplicationMgr::GetInstance()->GetTimeStart();
 
   // Print information
   GateMessage("Actor", 1,
@@ -222,8 +171,6 @@ void GateFSThermalActor::SaveData()
 }
 //-----------------------------------------------------------------------------
 
-
-
 //-----------------------------------------------------------------------------
 void GateFSThermalActor::ResetData()
 {
@@ -232,18 +179,12 @@ void GateFSThermalActor::ResetData()
 //-----------------------------------------------------------------------------
 
 //-----------------------------------------------------------------------------
-void GateFSThermalActor::BeginOfRunAction(const G4Run * r)
-{  
+void GateFSThermalActor::BeginOfRunAction(const G4Run * r) {  
   GateVActor::BeginOfRunAction(r);
-
-  DD("BeginOfRunAction::Begin");
   
   mCurrentTime = GateApplicationMgr::GetInstance()->GetCurrentTime();
-  mTimeStop = GateApplicationMgr::GetInstance()->GetTimeStop();  
 
   GateDebugMessage("Actor", 3, "GateFSThermalActor -- Begin of Run" << G4endl);
-
-  DD("BeginOfRunAction::End");
 }
 //-----------------------------------------------------------------------------
 
@@ -285,23 +226,10 @@ void GateFSThermalActor::EndOfRunAction(const G4Run* r)
   if(mIsMeasurementActivated) { ApplyStepMeasurement(tmpTime, true); }
   
   mCurrentTime = currentTime;
-  
-//   G4cout << "start: " << mTimeStart / s << " | current: " << mCurrentTime / s << " | stop:" << mTimeStop / s << G4endl;
-  
-  CropFilterType::Pointer crop = CropFilterType::New();
-  DoubleImageType::SizeType cropSize;
-  cropSize[0] = mCropSize;
-  cropSize[1] = mCropSize;
-  cropSize[2] = mCropSize;
-  crop->SetBoundaryCropSize(cropSize);
-  crop->SetInput(mITKenergyMap);
-  crop->Update();
-//   SaveITKimage(crop->GetOutput(), mAbsorptionFilename);
-  SaveITKimage(mITKenergyMap, mAbsorptionFilename);
+
+  SaveITKimage(mITKheatMap, mHeatAbsorptionFilename);
   
   if(mUserRelaxationTime > 0.0) { ApplyUserRelaxation(); }
-
-  DD("EndOfRunAction::End");
 }
 
 //-----------------------------------------------------------------------------
@@ -319,10 +247,7 @@ void GateFSThermalActor::UserSteppingActionInVoxel(const int index, const G4Step
 
   GateDebugMessageInc("Actor", 4, "GateFSThermalActor -- UserSteppingActionInVoxel - begin" << G4endl);
   
-  // FS: edep according to energyDeposit (not kinetic energy) -> to check
-  const double edep = step->GetPostStepPoint()->GetKineticEnergy()/eV;  // in eV
-//   const double edep = step->GetTotalEnergyDeposit() / eV;
-  
+  const double edep = step->GetTotalEnergyDeposit();  
   const G4String process = step->GetPostStepPoint()->GetProcessDefinedStep()->GetProcessName();
   
   // if no energy is deposited or energy is deposited outside image => do nothing
@@ -340,18 +265,20 @@ void GateFSThermalActor::UserSteppingActionInVoxel(const int index, const G4Step
 
   GateDebugMessage("Actor", 2, "GateFSThermalActor -- UserSteppingActionInVoxel:\tedep = " << G4BestUnit(edep, "Energy") << G4endl);
 
-  if ( process == "NanoAbsorption" || process == "OpticalAbsorption" )
+  if ( edep > 0.0 )
   {
     // add energy in the gate image
     mAbsorptionImage.AddValue(index, edep);
 
     // add energy in the ITK image (for diffusion and perfusion)
     G4ThreeVector gatePixelCoordinate = mImage.GetCoordinatesFromIndex(index);
-    mITKdoubleIndex[0] = gatePixelCoordinate.getX();
-    mITKdoubleIndex[1] = gatePixelCoordinate.getY();
-    mITKdoubleIndex[2] = gatePixelCoordinate.getZ();
-    double pixelValue = mITKenergyMap->GetPixel(mITKdoubleIndex);
-    mITKenergyMap->SetPixel(mITKdoubleIndex, pixelValue + edep);
+    DoubleImageType::IndexType indexITK;
+    indexITK[0] = gatePixelCoordinate.getX();
+    indexITK[1] = gatePixelCoordinate.getY();
+    indexITK[2] = gatePixelCoordinate.getZ();
+    double heatValue = mITKheatMap->GetPixel(indexITK);
+    double heatConversion = mITKheatConversionMap->GetPixel(indexITK);
+    mITKheatMap->SetPixel(indexITK, heatValue + edep*heatConversion);
   }
   
   GateDebugMessageDec("Actor", 4, "GateFSThermalActor -- UserSteppingActionInVoxel -- end" << G4endl);
@@ -361,78 +288,107 @@ void GateFSThermalActor::UserSteppingActionInVoxel(const int index, const G4Step
 //-----------------------------------------------------------------------------
 void GateFSThermalActor::ApplyStepDiffusion(double timeStep, bool forced)
 {
+  DoubleImageType::Pointer tmpHeatMap = mITKheatMap;
+  tmpHeatMap->DisconnectPipeline();
+
   std::map<G4Material *, DiffusionStruct>::iterator itMap;
   std::map<G4Material *, DiffusionStruct>::iterator itBegin = mMaterialToDiffusionStruct.begin();
   std::map<G4Material *, DiffusionStruct>::iterator itEnd = mMaterialToDiffusionStruct.end();
-  
-  mITKmultiplyImageFilter->SetInput1(mITKenergyMap);
-  
+
   for(itMap = itBegin; itMap != itEnd; ++itMap)
   {
     bool checkDiffusion = itMap->second.CheckDiffusionTime(timeStep, forced);    
     if(checkDiffusion)
     {
-      G4cout << "mat "<< itMap->first->GetName() << " is diffusing | sigma = " << itMap->second.sigma / mm << " mm | currentTimeStep = " << itMap->second.currentTimeStep / s << " s | timeStep = " << timeStep / s << " s | currentTime = " << mCurrentTime / s << " s" << G4endl;
-      itMap->second.diffusionNumber++;
-
-      // 1. multiply mask with energy map
-      mITKmultiplyImageFilter->SetInput2(itMap->second.mask);
-      mITKmultiplyImageFilter->Update();
-      
-      mITKsubtractImageFilter->SetInput1(mITKenergyMap);
-      mITKsubtractImageFilter->SetInput2(mITKmultiplyImageFilter->GetOutput());
-      mITKsubtractImageFilter->Update();
-      
-      // 2. apply recursive gaussian filter with corresponding diffusivity
+      DoubleToDoubleROIFilterType::Pointer roiFilter1 = DoubleToDoubleROIFilterType::New();
+      DoubleToDoubleROIFilterType::Pointer roiFilter2 = DoubleToDoubleROIFilterType::New();
+      AddImageFilterType::Pointer addFilter = AddImageFilterType::New();
+      MultiplyFilterType::Pointer multiplyFilter = MultiplyFilterType::New();
+      SubtractImageFilterType::Pointer subtractFilter = SubtractImageFilterType::New();
+      PasteImageFilterType::Pointer pasteFilter = PasteImageFilterType::New();
+      GaussianFilterType::Pointer gaussianFilterX = GaussianFilterType::New();
+      GaussianFilterType::Pointer gaussianFilterY = GaussianFilterType::New();
+      GaussianFilterType::Pointer gaussianFilterZ = GaussianFilterType::New();
+      gaussianFilterX->SetDirection(0);
+      gaussianFilterY->SetDirection(1);
+      gaussianFilterZ->SetDirection(2);
       double sigma = itMap->second.sigma;
-      mITKgaussianFilterX->SetInput(mITKmultiplyImageFilter->GetOutput());
-      mITKgaussianFilterX->SetSigma(sigma);
-      mITKgaussianFilterX->Update();
-      mITKgaussianFilterY->SetInput(mITKgaussianFilterX->GetOutput());
-      mITKgaussianFilterY->SetSigma(sigma);
-      mITKgaussianFilterY->Update();
-      mITKgaussianFilterZ->SetInput(mITKgaussianFilterY->GetOutput());
-      mITKgaussianFilterZ->SetSigma(sigma);
-      mITKgaussianFilterZ->Update();
+      gaussianFilterX->SetSigma(sigma);
+      gaussianFilterY->SetSigma(sigma);
+      gaussianFilterZ->SetSigma(sigma);
+      gaussianFilterX->SetOrder(GaussianFilterType::ZeroOrder);
+      gaussianFilterY->SetOrder(GaussianFilterType::ZeroOrder);
+      gaussianFilterZ->SetOrder(GaussianFilterType::ZeroOrder);
+      gaussianFilterX->SetNormalizeAcrossScale(false);
+      gaussianFilterY->SetNormalizeAcrossScale(false);
+      gaussianFilterZ->SetNormalizeAcrossScale(false);
       
-//       DoubleImageType::Pointer tmpImg = mITKmultiplyImageFilter->GetOutput();
-      DoubleImageType::Pointer tmpImg = mITKgaussianFilterZ->GetOutput();
+      G4cout << "useROI " << itMap->second.isROIused << " | mat "<< itMap->first->GetName() << " is diffusing | sigma = " << itMap->second.sigma / mm << " mm | currentTimeStep = " << itMap->second.currentTimeStep / s << " s | timeStep = " << timeStep / s << " s | currentTime = " << mCurrentTime / s << " s" << G4endl;
+      itMap->second.diffusionNumber++;
       
-//       if(mIsPerfusionActivated) {
-//         
-//         MultiplyFilterType::Pointer multConst = MultiplyFilterType::New();
-//         MultiplyFilterType::Pointer multImage = MultiplyFilterType::New();
-//         ExpFilterType::Pointer expImage = ExpFilterType::New();
-//         
-//         multConst->SetInput(mITKperfusionRateMap);
-//         multConst->SetConstant(-itMap->second.currentTimeStep);
-//         expImage->SetInput(multConst->GetOutput());
-//         multImage->SetInput1(tmpImg);
-//         multImage->SetInput2(expImage->GetOutput());
-//         multImage->Update();
-// 
-//         mITKdoubleIndex[0] = 117;
-//         mITKdoubleIndex[1] = 117;
-//         mITKdoubleIndex[2] = 25;
-//         DD(mITKperfusionRateMap->GetPixel(mITKdoubleIndex));
-//         DD(itMap->second.currentTimeStep);
-//         
-//         tmpImg = multImage->GetOutput();
-//         tmpImg->DisconnectPipeline();
-//         
-//         
-// //         DoubleIteratorType it(mITKgaussianFilterZ->GetOutput(), mITKgaussianFilterZ->GetOutput()->GetRequestedRegion());
-// // //         for(it.GoToBegin(); !it.IsAtEnd(); ++it) { it.Set(it.Get() * std::exp(- mITKperfusionRateMap->GetPixel(it.GetIndex()) * timeStep)); }
-// //         for(it.GoToBegin(); !it.IsAtEnd(); ++it) { it.Set(it.Get() * std::exp(- 0.142 /s * timeStep)); }
-//         
-//       }
-      
-      mITKaddImageFilter->SetInput1(mITKsubtractImageFilter->GetOutput());
-      mITKaddImageFilter->SetInput2(tmpImg);
-      mITKaddImageFilter->Update();
-      
-      mITKenergyMap = mITKaddImageFilter->GetOutput();
-      mITKenergyMap->DisconnectPipeline();
+      if(itMap->second.isROIused)
+      { 
+        // 1. ROIs on original (tmpHeatMap) and currently diffused (mITKheatMap) energyMaps
+        roiFilter1->SetInput(tmpHeatMap);
+        roiFilter1->SetRegionOfInterest(itMap->second.regionOfInterest);
+        roiFilter1->Update();
+        roiFilter2->SetInput(mITKheatMap);
+        roiFilter2->SetRegionOfInterest(itMap->second.regionOfInterest);
+        roiFilter2->Update();
+        // 2. multiply original map by the mask
+        multiplyFilter->SetInput1(roiFilter1->GetOutput());
+        multiplyFilter->SetInput2(itMap->second.mask);
+        multiplyFilter->Update();
+        // 3. subtract masked original map of the diffused map
+        subtractFilter->SetInput1(roiFilter2->GetOutput());
+        subtractFilter->SetInput2(multiplyFilter->GetOutput());
+        subtractFilter->Update();
+        // 4. apply recursive gaussian filter with corresponding diffusivity
+        gaussianFilterX->SetInput(multiplyFilter->GetOutput());
+        gaussianFilterX->Update();
+        gaussianFilterY->SetInput(gaussianFilterX->GetOutput());
+        gaussianFilterY->Update();
+        gaussianFilterZ->SetInput(gaussianFilterY->GetOutput());
+        gaussianFilterZ->Update();
+        // 5. add the result in the diffused map
+        addFilter->SetInput1(subtractFilter->GetOutput());
+        addFilter->SetInput2(gaussianFilterZ->GetOutput());
+        addFilter->Update();
+        // 6. paste the result (ROI) in the global map
+        pasteFilter->SetSourceImage(addFilter->GetOutput());
+        pasteFilter->SetSourceRegion(addFilter->GetOutput()->GetLargestPossibleRegion());
+        pasteFilter->SetDestinationImage(mITKheatMap);
+        pasteFilter->SetDestinationIndex(itMap->second.regionOfInterest.GetIndex());
+        pasteFilter->Update();
+        // 7. update final map
+        mITKheatMap = pasteFilter->GetOutput();
+        mITKheatMap->DisconnectPipeline();
+      }
+      else
+      {
+        // 1. multiply mask with energy map
+        multiplyFilter->SetInput1(tmpHeatMap);
+        multiplyFilter->SetInput2(itMap->second.mask);
+        multiplyFilter->Update();
+        // 2. subtract masked original map of the diffused map
+        subtractFilter->SetInput1(mITKheatMap);
+        subtractFilter->SetInput2(multiplyFilter->GetOutput());
+        subtractFilter->Update();
+        // 3. apply recursive gaussian filter with corresponding diffusivity
+        gaussianFilterX->SetInput(multiplyFilter->GetOutput());
+        gaussianFilterX->Update();
+        gaussianFilterY->SetInput(gaussianFilterX->GetOutput());
+        gaussianFilterY->Update();
+        gaussianFilterZ->SetInput(gaussianFilterY->GetOutput());
+        gaussianFilterZ->Update();
+        // 4. add the result in the diffused map
+        addFilter->SetInput1(subtractFilter->GetOutput());
+        addFilter->SetInput2(gaussianFilterZ->GetOutput());
+        addFilter->Update();
+        // 5. update final map
+        mITKheatMap = addFilter->GetOutput();
+        mITKheatMap->DisconnectPipeline();
+      }
     }
   }
 }
@@ -447,17 +403,14 @@ void GateFSThermalActor::ApplyUserRelaxation()
   
   double totalTime = mCurrentTime + mUserRelaxationTime;
 
-  DD("BeginUserDiffusion");
   if(mIsDiffusionActivated)
   {
-    DD("diffusion YES ; perfusion MAYBE");
     while(mCurrentTime < totalTime)
     {
       ApplyStepDiffusion(mMinTimeStep, false);
       if(mIsPerfusionActivated) { ApplyStepPerfusion(mMinTimeStep, false); }
       if(mIsMeasurementActivated) { ApplyStepMeasurement(mMinTimeStep, false); }
-      
-//       std::cout << std::setprecision(10) << "start: " << mTimeStart / s << " | current: " << mCurrentTime / s << " | timeStep: " << mMinTimeStep / s << " | stop:" << mTimeStop / s <<" | userStop:" << totalTime / s << std::endl;
+
       mCurrentTime += mMinTimeStep;
     }
 
@@ -470,22 +423,11 @@ void GateFSThermalActor::ApplyUserRelaxation()
     }    
   }
   else if(mIsPerfusionActivated) {
-    DD("diffusion NO ; perfusion YES");
     ApplyStepPerfusion(mUserRelaxationTime, true);
   }
 
-
-  CropFilterType::Pointer crop = CropFilterType::New();
-  DoubleImageType::SizeType cropSize;
-  cropSize[0] = mCropSize;
-  cropSize[1] = mCropSize;
-  cropSize[2] = mCropSize;
-  crop->SetBoundaryCropSize(cropSize);
-  crop->SetInput(mITKenergyMap);
-  crop->Update();
-//   SaveITKimage(crop->GetOutput(), mHeatDiffusionFilename);
-  SaveITKimage(mITKenergyMap, mHeatDiffusionFilename);
-  
+  // save heat map and local measurement
+  SaveITKimage(mITKheatMap, mHeatRelaxationFilename);
   for(unsigned int i=0; i<mMeasurementPoints.size(); i++)
   {
     std::vector<double> timeList = mMeasurementPoints[i].timeList;
@@ -520,18 +462,12 @@ void GateFSThermalActor::ApplyStepPerfusion(double timeStep, bool forced)
     multConst->SetInput(mITKperfusionRateMap);
     multConst->SetConstant(-mPerfusionTimer);
     expImage->SetInput(multConst->GetOutput());
-    multImage->SetInput1(mITKenergyMap);
+    multImage->SetInput1(mITKheatMap);
     multImage->SetInput2(expImage->GetOutput());
     multImage->Update();
-
-    mITKdoubleIndex[0] = 117;
-    mITKdoubleIndex[1] = 117;
-    mITKdoubleIndex[2] = 25;
-//     DD(mITKperfusionRateMap->GetPixel(mITKdoubleIndex));
-//     DD(mPerfusionTimer / s);
     
-    mITKenergyMap = multImage->GetOutput();
-    mITKenergyMap->DisconnectPipeline();
+    mITKheatMap = multImage->GetOutput();
+    mITKheatMap->DisconnectPipeline();
     
     mPerfusionTimer = 0.0;
   }
@@ -543,13 +479,12 @@ void GateFSThermalActor::ApplyStepMeasurement(double timeStep, bool forced)
 {
   for(unsigned int i=0; i<mMeasurementPoints.size(); i++)
   {
-    bool test = mMeasurementPoints[i].CheckMeasurementTime(timeStep, forced);
-    if(test)
+    bool check = mMeasurementPoints[i].CheckMeasurementTime(timeStep, forced);
+    if(check)
     {
-      DD(mMeasurementPoints[i].totalTime / s);
       double value = 0.0;
       std::vector<DoubleImageType::IndexType> indices = mMeasurementPoints[i].indexList;
-      for(unsigned j=0; j<indices.size(); j++) { value += mITKenergyMap->GetPixel(indices[j]); }
+      for(unsigned j=0; j<indices.size(); j++) { value += mITKheatMap->GetPixel(indices[j]); }
       mMeasurementPoints[i].SetValue(mMeasurementPoints[i].totalTime, value);
     }
   }
@@ -560,14 +495,8 @@ void GateFSThermalActor::ApplyStepMeasurement(double timeStep, bool forced)
 double GateFSThermalActor::GetPropertyFromMaterial(const G4Material *mat, G4String prop, G4double unit)
 {
   G4MaterialPropertiesTable *materialPropertyTable = mat->GetMaterialPropertiesTable();
-  if(materialPropertyTable)
-  {
-    return materialPropertyTable->GetConstProperty(prop) * unit;
-  }
-  else
-  {
-    return 0.0;
-  }
+  if(materialPropertyTable) { return materialPropertyTable->GetConstProperty(prop) * unit; }
+  else { return 0.0; }
 }
 //-----------------------------------------------------------------------------
 
@@ -577,39 +506,35 @@ void GateFSThermalActor::ConstructRegionMasks(GateVImageVolume *gateImage)
   // This function creates a 'diffusion struct' (see .hh) for each material in the
   // considered voxelised volume. Each struct is composed of:
   // 1. diffusivity/period (constant values)
-  // 2. image mask (1 if corresponding material, 0 otherwise)
-  // 3. timer/sigma (variable values)
+  // 2. regionOfInterest in the energyMap
+  // 3. image mask (1 if corresponding material, 0 otherwise)
+  // 4. timer/sigma (variable values)
+  //
+  // Additionaly, an eV->Kelvin conversion map is created to convert inline the energyMap into heatMap
+  // Finally, a perfusionRate map is constructed following the method chosen by the user ('image', 'fixedValue' or 'byMaterial')
   
   // Create an ITK copy of the GATE label image
   GateImage *gateImg = gateImage->GetImage();
-  FloatImageType::Pointer originLabelImage = ConvertGateImageToITKImage(gateImg);
-  mITKfloatDuplicatorFilter->SetInputImage(originLabelImage);
-  mITKfloatDuplicatorFilter->Update();
-  FloatImageType::Pointer labelImage = mITKfloatDuplicatorFilter->GetOutput();
-
+  FloatImageType::Pointer originLabelImage = ConvertGateToITKImage_float(gateImg);
+  FloatDuplicatorType::Pointer floatDuplicatorFilter = FloatDuplicatorType::New();
+  floatDuplicatorFilter->SetInputImage(originLabelImage);
+  floatDuplicatorFilter->Update();
+  FloatImageType::Pointer labelImage = floatDuplicatorFilter->GetOutput();
+  FloatImageType::SizeType labelImageSize = labelImage->GetRequestedRegion().GetSize();
   
   // find the maximum resolution in image that will be use to limit the diffusion to the voxel size
   double resolutionMax = 0.0;
+  double voxelVolume = 1.0;
   for (unsigned int i = 0; i < 3; i++)
   {
     double spacing = gateImg->GetVoxelSize()[i];
+    voxelVolume = voxelVolume * spacing * mm;
     if (spacing > resolutionMax) { resolutionMax = spacing; }
   }
   resolutionMax = resolutionMax * mm;
-
-//   typedef itk::CropImageFilter<FloatImageType, FloatImageType> tmpCropFilterType;
-//   tmpCropFilterType::Pointer crop = tmpCropFilterType::New();
-//   FloatImageType::SizeType cropSize;
-//   cropSize[0] = 0;
-//   cropSize[1] = 0;
-//   cropSize[2] = 150;
-//   crop->SetBoundaryCropSize(cropSize);
-//   crop->SetInput(labelImage);
-//   crop->Update();
-//   SaveITKimage(crop->GetOutput(), "myCropMouse.mhd");
+  double sigmaMax = 1.0 * resolutionMax;
 
   // Create a temporary materialToLabel map in order to regroup every voxel with the same material under the same label
-  // and, by consequence, minimize the number of image masks when applying the diffusion process.
   std::map<float, G4Material *> labelToNewMaterial;
   std::map<G4Material *, float> materialToNewLabel;
   std::map<G4Material *, float>::iterator itNewLabel;
@@ -637,143 +562,184 @@ void GateFSThermalActor::ConstructRegionMasks(GateVImageVolume *gateImage)
     itImage.Set(itNewLabel->second);
     labelImage->Update();
   }
-
-  // Initialisation of the ITK binary filter
-  BinaryThresholdFilterType::Pointer binaryThresholdFilter = BinaryThresholdFilterType::New();
-  binaryThresholdFilter->SetInput(labelImage);
-  binaryThresholdFilter->SetOutsideValue(float(0.0));
-  binaryThresholdFilter->SetInsideValue(float(1.0));
-
-  FloatPadFilterType::Pointer pad = FloatPadFilterType::New();
-  FloatImageType::SizeType border;
-  border.Fill(mCropSize);
-  pad->SetPadBound(border);
   
+  // Create masks and diffusion structure for each label
   for(itNewLabel = materialToNewLabel.begin(); itNewLabel != materialToNewLabel.end(); ++itNewLabel)
   {
     newLabel = itNewLabel->second;
+
+    // 1. find the ROI (lower and higher indices) corresponding to the label in the image (crop process)
+    int lowerBound[3] = {(int)labelImageSize[0]-1,(int)labelImageSize[1]-1,(int)labelImageSize[2]-1};
+    int upperBound[3] = {0,0,0};
+    for(itImage.GoToBegin(); !itImage.IsAtEnd(); ++itImage)
+    {
+      if(itImage.Get() == newLabel)
+      {
+        FloatImageType::IndexType index = itImage.GetIndex();
+        if(index[0] < lowerBound[0]) { lowerBound[0] = index[0]; }
+        if(index[1] < lowerBound[1]) { lowerBound[1] = index[1]; }
+        if(index[2] < lowerBound[2]) { lowerBound[2] = index[2]; }
+        if(index[0] > upperBound[0]) { upperBound[0] = index[0]; }
+        if(index[1] > upperBound[1]) { upperBound[1] = index[1]; }
+        if(index[2] > upperBound[2]) { upperBound[2] = index[2]; }
+      }
+    }
+    
+    // 2. slightly increase the ROI in each direction for the diffusion process
+    FloatImageType::IndexType start;
+    FloatImageType::SizeType size;
+    bool useROI = false;
+    for(int i=0; i<3; i++)
+    {
+      lowerBound[i] -= 4; // 4.0 * sigma (gaussian blurring) 
+      upperBound[i] += 5; // 1pix + 4.0 * sigma (gaussian bluring)
+      if(lowerBound[i] > 0) { useROI = true; }
+      else { lowerBound[i] = 0; }
+      if(upperBound[i] < (int)labelImageSize[i]) { useROI = true; }
+      else { upperBound[i] = labelImageSize[i]; }
+      
+      start[i] = lowerBound[i];
+      size[i] = upperBound[i] - lowerBound[i];
+    }
+
+    // 3. create mask and diffusion structure
+    FloatImageType::RegionType region;
+    region.SetIndex(start);
+    region.SetSize(size);
+    
+    FloatToFloatROIFilterType::Pointer roiFilter = FloatToFloatROIFilterType::New();
+    roiFilter->SetInput(labelImage);
+    roiFilter->SetRegionOfInterest(region);
+
+    BinaryThresholdFilterType::Pointer binaryThresholdFilter = BinaryThresholdFilterType::New();
+    binaryThresholdFilter->SetOutsideValue(float(0.0));
+    binaryThresholdFilter->SetInsideValue(float(1.0));
+    binaryThresholdFilter->SetInput(roiFilter->GetOutput());
     binaryThresholdFilter->SetLowerThreshold(newLabel-0.1);
     binaryThresholdFilter->SetUpperThreshold(newLabel+0.1);
     binaryThresholdFilter->Update();
     
-    if(newLabel == 1.0)
-    {
-      DD("Test succeded !");
-      pad->SetConstant(0.0);
-    }
-    else
-    {
-      DD("Test failed ...");
-      pad->SetConstant(0.0);
-    }
-    
-    pad->SetInput(binaryThresholdFilter->GetOutput());
-    pad->Update();
-    
-    double diffusivity = GetPropertyFromMaterial(itNewLabel->first, "DIFFUSIVITY", mm2/s);
-//       FloatImageType::Pointer mask = pad->GetOutput();
     FloatImageType::Pointer mask = binaryThresholdFilter->GetOutput();
     mask->DisconnectPipeline();
-    DiffusionStruct newDiffStruct(diffusivity, 1.0 * resolutionMax, mask);
+
+    double diffusivity = GetPropertyFromMaterial(itNewLabel->first, "DIFFUSIVITY", mm2/s);
+    DiffusionStruct newDiffStruct(diffusivity, sigmaMax, useROI, region, mask);
     mMaterialToDiffusionStruct.insert(std::make_pair(itNewLabel->first, newDiffStruct));
   }
 
-  double diffusivityMin = 1.0e10;
+  // Define the minimum timeStep for diffusion (highest diffusive material)
+//   double diffusivityMin = 1.0e10;
   double diffusivityMax = 0.0;
-  
   std::map<G4Material *, DiffusionStruct>::iterator itMap;  
   for(itMap = mMaterialToDiffusionStruct.begin(); itMap != mMaterialToDiffusionStruct.end(); ++itMap)
   {
+//     if(itMap->second.diffusivity < diffusivityMin and itMap->second.diffusivity > 0) { diffusivityMin = itMap->second.diffusivity; }
     if(itMap->second.diffusivity > diffusivityMax) { diffusivityMax = itMap->second.diffusivity; }
-    if(itMap->second.diffusivity < diffusivityMin and itMap->second.diffusivity > 0) { diffusivityMin = itMap->second.diffusivity; }
   }
-
-  double durationMin = 1.0 * resolutionMax * resolutionMax / (2 * diffusivityMax);
-  double durationMax = 1.0 * resolutionMax * resolutionMax / (2 * diffusivityMin);
-  G4cout << "diffMax = " << diffusivityMax / (mm2/s) << " durationMin = " << durationMin / s  << " | diffMin = " << diffusivityMin / (mm2/s) << " durationMax = " << durationMax / s << G4endl;
-  
-  mMinTimeStep = 1.0 * resolutionMax * resolutionMax / (2.0 * diffusivityMax);
+  mMinTimeStep = sigmaMax * sigmaMax / (2.0 * diffusivityMax);
+//   double durationMin = sigmaMax * sigmaMax / (2.0 * diffusivityMax);
+//   double durationMax = sigmaMax * sigmaMax / (2.0 * diffusivityMin);
+//   G4cout << "diffMax = " << diffusivityMax / (mm2/s) << " durationMin = " << durationMin / s  << " | diffMin = " << diffusivityMin / (mm2/s) << " durationMax = " << durationMax / s << G4endl;
   
   // debug
-//   std::map<G4Material *, DiffusionStruct>::iterator itTmp;
-//   for(itTmp=mMaterialToDiffusionStruct.begin(); itTmp!=mMaterialToDiffusionStruct.end(); ++itTmp)
-//   {
-//     G4cout << "mat "<< itTmp->first->GetName() << " | diff = " << itTmp->second.diffusivity / (mm2/s)
-//            << " mm2.s-1 | period = " << itTmp->second.period / s
-//            << " s | timer = " << itTmp->second.timer / s << " s " << G4endl;
-//            
-//     std::ostringstream temp;
-//     temp << itTmp->first->GetName();
-//     SaveITKimage(itTmp->second.mask, "output/itkMask_" + temp.str() + ".mhd");
-//   }
+  std::map<G4Material *, DiffusionStruct>::iterator itTmp;
+  for(itTmp=mMaterialToDiffusionStruct.begin(); itTmp!=mMaterialToDiffusionStruct.end(); ++itTmp)
+  {
+    G4cout << "mat "<< itTmp->first->GetName() << " | diff = " << itTmp->second.diffusivity / (mm2/s)
+           << " mm2.s-1 | period = " << itTmp->second.period / s
+           << " s | timer = " << itTmp->second.timer / s << " s " << G4endl;
+           
+    std::ostringstream temp;
+    temp << itTmp->first->GetName();
+    SaveITKimage(itTmp->second.mask, "output/itkMask_" + temp.str() + ".mhd");
+  }
 
+  // Construct conversion map (eV->Kelvin) with dimensions of heat map (MANDATORY)
+  DoubleDuplicatorType::Pointer doubleDuplicatorFilter1 = DoubleDuplicatorType::New();
+  doubleDuplicatorFilter1->SetInputImage(mITKheatMap);
+  doubleDuplicatorFilter1->Update();
+  mITKheatConversionMap = doubleDuplicatorFilter1->GetOutput();
+  mITKheatConversionMap->DisconnectPipeline();
+  for(itImage.GoToBegin(); !itImage.IsAtEnd(); ++itImage)
+  {
+    // 1. get voxel label and material
+    DoubleImageType::IndexType index = itImage.GetIndex();
+    std::map<float, G4Material *>::iterator itLabel = labelToNewMaterial.find(itImage.Get());
+    G4Material *mat = itLabel->second;
+    
+    // 2. get tissue heat capacity ('user' value from 'macro' or 'by material' from 'Material.xml') and tissue density
+    double tissueDensity = mat->GetDensity();
+    double tissueHeatCapacity;
+    if(mUserTissueHeatCapacity > 0.0) { tissueHeatCapacity = mUserTissueHeatCapacity; }
+    else { tissueHeatCapacity = GetPropertyFromMaterial(mat, "HEATCAPACITY", joule/(kg*kelvin)); }
+
+    // 3. calculate conversion factor (eV->Kelvin)
+    double eVtoDegreeFactor = 1.0 / (tissueDensity * voxelVolume * tissueHeatCapacity);
+    mITKheatConversionMap->SetPixel(index, eVtoDegreeFactor);
+  }
+  
+  // Construct perfusionMap (OPTIONAL)
   double mMinPerfusionCoef = 1.0e10;
   double mMaxPerfusionCoef = 0.0;
-  
-  // Construct perfusionMap
   if(mIsPerfusionActivated)
   {
+    // create empty perfusion map with dimensions of heat map 
+    DoubleDuplicatorType::Pointer doubleDuplicatorFilter2 = DoubleDuplicatorType::New();
+    doubleDuplicatorFilter2->SetInputImage(mITKheatMap);
+    doubleDuplicatorFilter2->Update();
+    mITKperfusionRateMap = doubleDuplicatorFilter2->GetOutput();
+    
+    // - security conditions (have to be set in 'macro')
     if(mUserBloodDensity<=0.0) { GateError("Error: Please, set the 'bloodDensity' in order to use the blood perfusion process."); }
     if(mUserBloodHeatCapacity<=0.0) { GateError("Error: Please, set the 'bloodHeatCapacity' in order to use the blood perfusion process."); }
-//     if(mUserTissueHeatCapacity<=0.0) { GateError("Error: Please, set the 'tissueHeatCapacity' in order to use the blood perfusion process."); }
-    DoubleImageType *tmpPerfusionRateMap = DoubleImageType::New();
-    
-    if(mIsPerfusionByImage) {
-      DD("perfByImage");
-      mITKdoubleReaderFilter->SetFileName(mUserPerfusionImageName);
-      mITKdoubleReaderFilter->Update();
-      DD("test1");
-      tmpPerfusionRateMap = mITKdoubleReaderFilter->GetOutput();
-      DD("test2");
-    }
 
-    mITKdoubleDuplicatorFilter->SetInputImage(mITKenergyMap);
-    mITKdoubleDuplicatorFilter->Update();
-    mITKperfusionRateMap = mITKdoubleDuplicatorFilter->GetOutput();
+    // - if perfusion image is provided by the user, read it
+    DoubleImageType *tmpPerfusionRateMap = DoubleImageType::New();
+    if(mIsPerfusionByImage)
+    {
+      DoubleReaderType::Pointer doubleReaderFilter = DoubleReaderType::New();
+      doubleReaderFilter->SetFileName(mUserPerfusionImageName);
+      doubleReaderFilter->Update();
+      tmpPerfusionRateMap = doubleReaderFilter->GetOutput();
+    }
     
     for(itImage.GoToBegin(); !itImage.IsAtEnd(); ++itImage)
     {
-      DoubleImageType::IndexType index = itImage.GetIndex();
-      
       // 1. get voxel label and material
+      DoubleImageType::IndexType index = itImage.GetIndex();
       std::map<float, G4Material *>::iterator itLabel = labelToNewMaterial.find(itImage.Get());
       G4Material *mat = itLabel->second;
-      
+
+      // 2. get voxel label and material
       double perfusionRate = mUserBloodPerfusionRate;
       if(mIsPerfusionByMaterial) { perfusionRate = GetPropertyFromMaterial(mat, "PERFUSIONRATE", 1./s); }
       else if(mIsPerfusionByImage) { perfusionRate = tmpPerfusionRateMap->GetPixel(index) / s; }
-      
+
+      // 3. get tissue heat capacity ('user' value from 'macro' or 'by material' from 'Material.xml') and tissue density
+      double tissueDensity = mat->GetDensity();
       double tissueHeatCapacity;
       if(mUserTissueHeatCapacity > 0.0) { tissueHeatCapacity = mUserTissueHeatCapacity; }
       else { tissueHeatCapacity = GetPropertyFromMaterial(mat, "HEATCAPACITY", joule/(kg*kelvin)); }
       
-      double tissueDensity = mat->GetDensity();
-      
+      // 4. final perfusionRate factor
       double perfusionCoef = perfusionRate * (mUserBloodDensity * mUserBloodHeatCapacity) / (tissueDensity * tissueHeatCapacity);
-      
-//       if(index[2]==15) G4cout <<index[0]<<" "<<index[1]<<" "<<index[2]<<" | perf: "<< perfusionRate * s <<" s-1 | tHC: "<<tissueHeatCapacity / (joule/(kg*kelvin)) <<" J.kg-1.K-1 | td: "<< tissueDensity / (g/cm3) <<" g/cm-3 | bHC: "<< mUserBloodHeatCapacity / (joule/(kg*kelvin)) <<" J.kg-1.K-1 | bd: "<< mUserBloodDensity /(g/cm3)<<" g.cm-3 |"<< G4endl;
-      
+      mITKperfusionRateMap->SetPixel(index, perfusionCoef);
+
+      // 5. find the min and max perfusionRate values for calculating perfusion time step
       if(perfusionCoef < mMinPerfusionCoef) { mMinPerfusionCoef = perfusionCoef; }
       if(perfusionCoef > mMaxPerfusionCoef) { mMaxPerfusionCoef = perfusionCoef; }
-      
-      mITKperfusionRateMap->SetPixel(index, perfusionCoef);
     }
-//     SaveITKimage(mITKperfusionRateMap, "output/perfusionRateMap.mhd");
 
+    // define the global timeStep for perfusion (time for 1% heat decrease for the highest perfusionRate)
     mMinPerfusionTimeStep = -log(mPerfusionRatio) / mMaxPerfusionCoef;
-
-    DD(mMinPerfusionCoef * s);
-    DD(mMaxPerfusionCoef * s);
-    DD(mMinPerfusionTimeStep / s);
   }
-  
 }
 //-----------------------------------------------------------------------------
 
 //-----------------------------------------------------------------------------
-GateFSThermalActor::FloatImageType::Pointer GateFSThermalActor::ConvertGateImageToITKImage(GateImage *gateImg)
+GateFSThermalActor::FloatImageType::Pointer GateFSThermalActor::ConvertGateToITKImage_float(GateImage *gateImg)
 {
-  mGateToITKImageFilter = ImportFilterType::New();
+  ImportFilterType::Pointer gateToITKImageFilter = ImportFilterType::New();
   ImportFilterType::SizeType  size;
   double origin[3];
   double spacing[3];
@@ -790,24 +756,22 @@ GateFSThermalActor::FloatImageType::Pointer GateFSThermalActor::ConvertGateImage
   region.SetIndex( start );
   region.SetSize(  size  );
  
-  mGateToITKImageFilter->SetRegion(region);
-  mGateToITKImageFilter->SetOrigin(origin);
-  mGateToITKImageFilter->SetSpacing(spacing);
+  gateToITKImageFilter->SetRegion(region);
+  gateToITKImageFilter->SetOrigin(origin);
+  gateToITKImageFilter->SetSpacing(spacing);
  
   const unsigned int numberOfPixels =  size[0] * size[1] * size[2];
   const bool importImageFilterWillOwnTheBuffer = false;
-  mGateToITKImageFilter->SetImportPointer(&*(gateImg->begin()), numberOfPixels, importImageFilterWillOwnTheBuffer);
-  mGateToITKImageFilter->Update();
+  gateToITKImageFilter->SetImportPointer(&*(gateImg->begin()), numberOfPixels, importImageFilterWillOwnTheBuffer);
+  gateToITKImageFilter->Update();
 
-//   SaveITKimage(mGateToITKImageFilter->GetOutput(), "output/GateToITKimageCT.mhd");
-
-  FloatImageType::Pointer output = mGateToITKImageFilter->GetOutput();
+  FloatImageType::Pointer output = gateToITKImageFilter->GetOutput();
   return output;
 }
 //-----------------------------------------------------------------------------
 
 //-----------------------------------------------------------------------------
-GateFSThermalActor::DoubleImageType::Pointer GateFSThermalActor::ConvertEnergyImageToITKImage(GateImageDouble *gateImg)
+GateFSThermalActor::DoubleImageType::Pointer GateFSThermalActor::ConvertGateToITKImage_double(GateImageDouble *gateImg)
 {
   typedef itk::ImportImageFilter<double, 3> DoubleImportFilterType;
   DoubleImportFilterType::Pointer importFilter = DoubleImportFilterType::New();
@@ -836,24 +800,7 @@ GateFSThermalActor::DoubleImageType::Pointer GateFSThermalActor::ConvertEnergyIm
   const bool importImageFilterWillOwnTheBuffer = false;
   importFilter->SetImportPointer(&*(gateImg->begin()), numberOfPixels, importImageFilterWillOwnTheBuffer);
   importFilter->Update();
-  
-//   SaveITKimage(importFilter->GetOutput(), "output/GateToITKimageEnergy.mhd");
-
-//   DoubleImageType::Pointer output = importFilter->GetOutput();
-//   return output;
-  
-  DoublePadFilterType::Pointer pad = DoublePadFilterType::New();
-  DoubleImageType::SizeType border;
-  border.Fill(mCropSize);
-  pad->SetPadBound(border);
-  pad->SetConstant(0.0);
-  pad->SetInput(importFilter->GetOutput());
-  pad->Update();
-
-//   DoubleImageType::Pointer output = pad->GetOutput();
   DoubleImageType::Pointer output = importFilter->GetOutput();
-  
-  SaveITKimage(output, "output/GateToITKimageEnergy.mhd");
   
   return output;
 }
@@ -904,13 +851,6 @@ void GateFSThermalActor::ReadMeasurementFile(DoubleImageType::Pointer img)
       }
 
       mMeasurementPoints.push_back(newMeasPoint);
-      
-//       G4cout<<"period: "<< newMeasPoint.period <<" | lx: "<<lx<<" ux: "<<ux<<G4endl;
-//       DD(newMeasPoint.indexList.size());
-//       for(unsigned int i=0; i<newMeasPoint.indexList.size(); i++)
-//       {
-//         G4cout<<"x: "<< newMeasPoint.indexList[i][0]<<"x: "<< newMeasPoint.indexList[i][1] <<"x: "<< newMeasPoint.indexList[i][2] <<G4endl;
-//       }      
     }
   
     skipComment(is);

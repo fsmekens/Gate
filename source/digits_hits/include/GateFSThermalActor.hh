@@ -8,7 +8,6 @@
 
 /*
   \class GateThermalActor
-  \author vesna.cuplov@gmail.com
   \author fsmekens@gmail.com
   \brief Class GateThermalActor : This actor produces voxelised images of the heat diffusion in tissue.
 
@@ -36,18 +35,15 @@
 #include "itkImageFileWriter.h"
 #include "itkImageIterator.h"
 #include "itkRecursiveGaussianImageFilter.h"
-#include "itkDiscreteGaussianImageFilter.h"
-#include "itkRescaleIntensityImageFilter.h"
 #include "itkMultiplyImageFilter.h"
 #include "itkExpImageFilter.h"
 #include "itkAddImageFilter.h"
 #include "itkSubtractImageFilter.h"
-#include "itkMaximumImageFilter.h"
 #include "itkBinaryThresholdImageFilter.h"
 #include "itkImageDuplicator.h"
 #include "itkImportImageFilter.h"
-#include "itkConstantPadImageFilter.h"
-#include "itkCropImageFilter.h"
+#include "itkRegionOfInterestImageFilter.h"
+#include "itkPasteImageFilter.h"
 
 #endif
 
@@ -67,35 +63,37 @@ public:
   typedef itk::ImageRegionIterator<DoubleImageType> DoubleIteratorType;
   typedef itk::ImageDuplicator<FloatImageType> FloatDuplicatorType;
   typedef itk::ImageDuplicator<DoubleImageType> DoubleDuplicatorType;
-  typedef itk::ImageFileReader<FloatImageType> FloatReaderType;
   typedef itk::ImageFileReader<DoubleImageType> DoubleReaderType;
-  typedef itk::ConstantPadImageFilter<FloatImageType, FloatImageType> FloatPadFilterType;
-  typedef itk::ConstantPadImageFilter<DoubleImageType, DoubleImageType> DoublePadFilterType;
-  typedef itk::CropImageFilter<DoubleImageType, DoubleImageType> CropFilterType;
   typedef itk::MultiplyImageFilter<DoubleImageType, FloatImageType, DoubleImageType> MultiplyFilterType;
   typedef itk::ExpImageFilter<DoubleImageType, FloatImageType> ExpFilterType;
   typedef itk::AddImageFilter<DoubleImageType, DoubleImageType, DoubleImageType> AddImageFilterType;
   typedef itk::SubtractImageFilter<DoubleImageType, DoubleImageType> SubtractImageFilterType;
   typedef itk::BinaryThresholdImageFilter<FloatImageType, FloatImageType> BinaryThresholdFilterType;
-  typedef itk::MaximumImageFilter<FloatImageType, FloatImageType, FloatImageType> MaxImageFilterType;
   typedef itk::RecursiveGaussianImageFilter<DoubleImageType, DoubleImageType> GaussianFilterType;
-  typedef itk::DiscreteGaussianImageFilter<DoubleImageType, DoubleImageType> DGaussianFilterType;
   typedef itk::ImportImageFilter<float, 3> ImportFilterType;
+  typedef itk::RegionOfInterestImageFilter<FloatImageType, FloatImageType> FloatToFloatROIFilterType;
+  typedef itk::RegionOfInterestImageFilter<DoubleImageType, DoubleImageType> DoubleToDoubleROIFilterType;
+  typedef itk::PasteImageFilter<DoubleImageType> PasteImageFilterType;
   
   //-----------------------------------------------------------------------------
+  // Defines ROI for thermal diffusion and corresponding thermal diffusion periodicity
   struct DiffusionStruct {
     double diffusivity;
     double period;
     double sigma;
+    bool isROIused;
+    FloatImageType::RegionType regionOfInterest;
     FloatImageType::Pointer mask;
     double timer;
     double currentTimeStep;
     double totalTime;
     int diffusionNumber;
     
-    DiffusionStruct(double c, double s, FloatImageType::Pointer m) {
+    DiffusionStruct(double c, double s, bool useROI, FloatImageType::RegionType r, FloatImageType::Pointer m) {
       diffusivity = c;
       sigma = s;
+      isROIused = useROI;
+      regionOfInterest = r;
       mask = m;
       period = sigma * sigma / (2.0 * diffusivity);
       timer = 0.0;
@@ -107,7 +105,6 @@ public:
     bool CheckDiffusionTime(double stepTime, bool forced) {
       timer += stepTime;
       totalTime += stepTime;
-//       std::cout << std::setprecision(10) << "timer: " << timer / s << " | period: " << period / s << std::endl;
       sigma = sqrt(2.0 * timer * diffusivity);
       if((timer >= period or forced) and sigma > 0.0) {
         currentTimeStep = timer;
@@ -117,7 +114,9 @@ public:
       else { return false; }
     }
   };
+  
   //-----------------------------------------------------------------------------
+  // Defines rectangle ROI and corresponding measurement periodicity 
   struct MeasurementStruct {
     int label;
     double period;
@@ -152,130 +151,107 @@ public:
       timeList.push_back(t);
       measList.push_back(m);
     }
-    
   };
+  
   //-----------------------------------------------------------------------------
   // Constructs the sensor
   virtual void Construct();
 
   virtual void BeginOfRunAction(const G4Run *r);
-  virtual void EndOfRunAction(const G4Run *); // default action (save)
+  virtual void EndOfRunAction(const G4Run *);
   virtual void BeginOfEventAction(const G4Event *event);
   virtual void EndOfEventAction(const G4Event *event);
   virtual void UserSteppingActionInVoxel(const int index, const G4Step *step);
-  virtual void UserPreTrackActionInVoxel(const int /*index*/, const G4Track *track);
-  virtual void UserPostTrackActionInVoxel(const int /*index*/, const G4Track * /*t*/) {}
+  virtual void UserPreTrackActionInVoxel(const int, const G4Track *track);
+  virtual void UserPostTrackActionInVoxel(const int, const G4Track *) {}
 
   //  Saves the data collected to the file
   virtual void SaveData();
   virtual void ResetData();
 
   // Scorer related
-  virtual void Initialize(G4HCofThisEvent*){}
-  virtual void EndOfEvent(G4HCofThisEvent*){}
+  virtual void Initialize(G4HCofThisEvent*) {}
+  virtual void EndOfEvent(G4HCofThisEvent*) {}
 
+  // Main functions for applying the thermal diffusion and perfussion
   void ConstructRegionMasks(GateVImageVolume *);
   void ConstructPerfusionMap();
+  void ReadMeasurementFile(DoubleImageType::Pointer);
   double GetPropertyFromMaterial(const G4Material *, G4String, G4double);
   void ApplyStepPerfusion(double, bool);
   void ApplyStepDiffusion(double, bool);
   void ApplyStepMeasurement(double, bool);
   void ApplyUserRelaxation();
   
-  FloatImageType::Pointer ConvertGateImageToITKImage(GateImage *);
-  DoubleImageType::Pointer ConvertEnergyImageToITKImage(GateImageDouble *);
-    
+  // images management
+  FloatImageType::Pointer ConvertGateToITKImage_float(GateImage *);
+  DoubleImageType::Pointer ConvertGateToITKImage_double(GateImageDouble *);
   void SaveITKimage(FloatImageType::Pointer, G4String);
   void SaveITKimage(DoubleImageType::Pointer, G4String);
   
+  // Complex 'set' functions
   void SetBloodPerfusionByMaterial(G4bool);
   void SetBloodPerfusionByConstant(G4double);
   void SetBloodPerfusionByImage(G4String);
   void SetMeasurementFilename(G4String);
-  void ReadMeasurementFile(DoubleImageType::Pointer);
-
+  // Basic 'set' functions
   void setRelaxationTime(G4double t) { mUserRelaxationTime = t; }
   void setDiffusivity(G4double d) { mUserMaterialDiffusivity = d; }
   void setBloodDensity(G4double d) { mUserBloodDensity = d; }
   void setBloodHeatCapacity(G4double c) { mUserBloodHeatCapacity = c; }
   void setTissueDensity(G4double d) { mUserTissueDensity = d; }
   void setTissueHeatCapacity(G4double c) { mUserTissueHeatCapacity = c; }
-  void setScale(G4double s) { mUserSimulationScale = s; }
   void enableStepDiffusion(G4bool b) { mIsDiffusionActivated = b; }
   
 protected:
-
-  G4double mTimeNow;
 
   GateFSThermalActor(G4String name, G4int depth=0);
   GateFSThermalActorMessenger * pMessenger;
 
   int mCurrentEvent;
-  int counter;
-
   StepHitType mUserStepHitType;
 
+  // image data
   GateImageWithStatistic mAbsorptionImage;
-
   G4String mAbsorptionFilename;
-  G4String mHeatDiffusionFilename;
+  G4String mHeatAbsorptionFilename;
+  G4String mHeatRelaxationFilename;
+  DoubleImageType::Pointer mITKheatMap;
+  DoubleImageType::Pointer mITKperfusionRateMap;
+  DoubleImageType::Pointer mITKheatConversionMap;
 
-  double mUserRelaxationTime;
-  double mUserMaterialDiffusivity;
-  double mUserSimulationScale;
-  
-  double mTimeStart;
-  double mTimeStop;
+  // time data
   double mCurrentTime;
   double mPreviousTime;
-  
-  bool mIsDiffusionActivated;
-  double mMinTimeStep;
-  int mCropSize;
+  double mPerfusionTimer;
+  double mUserRelaxationTime;
   std::vector<G4Material *> mMaterialList;
-  std::map<int, DiffusionStruct> mLabelToDiffusionStruct;
   std::map<G4Material *, DiffusionStruct> mMaterialToDiffusionStruct;
-  
-  bool mIsMeasurementActivated;
-  G4String mMeasurementFilename;
-  std::vector<MeasurementStruct> mMeasurementPoints;
-  
+  double mMinTimeStep;
+
+  // activation flags
   bool mIsPerfusionActivated;
   bool mIsPerfusionByMaterial;
   bool mIsPerfusionByConstant;
   bool mIsPerfusionByImage;
+  bool mIsDiffusionActivated;  
+  bool mIsMeasurementActivated;
+  G4String mMeasurementFilename;
+  std::vector<MeasurementStruct> mMeasurementPoints;
 
-  double deltaT;
+  // constant values
   G4String mUserPerfusionImageName;
   double mUserBloodPerfusionRate;
   double mUserBloodDensity;
   double mUserBloodHeatCapacity;
   double mUserTissueDensity;
   double mUserTissueHeatCapacity;
-
   double mMinPerfusionCoef;
   double mMaxPerfusionCoef;
   double mPerfusionRatio;
   double mMinPerfusionTimeStep;
-  double mPerfusionTimer;
+  double mUserMaterialDiffusivity;
   
-  DoubleImageType::IndexType mITKdoubleIndex;
-  DoubleImageType::Pointer mITKenergyMap;
-  DoubleImageType::Pointer mITKperfusionRateMap;
-
-  // ITK filters
-  FloatReaderType::Pointer mITKfloatReaderFilter;
-  DoubleReaderType::Pointer mITKdoubleReaderFilter;
-  FloatDuplicatorType::Pointer mITKfloatDuplicatorFilter;
-  DoubleDuplicatorType::Pointer mITKdoubleDuplicatorFilter;
-  ImportFilterType::Pointer mGateToITKImageFilter;
-  MultiplyFilterType::Pointer mITKmultiplyImageFilter;
-  AddImageFilterType::Pointer mITKaddImageFilter;
-  SubtractImageFilterType::Pointer mITKsubtractImageFilter;
-  MaxImageFilterType::Pointer mITKmaxImageFilter;
-  GaussianFilterType::Pointer mITKgaussianFilterX;
-  GaussianFilterType::Pointer mITKgaussianFilterY;
-  GaussianFilterType::Pointer mITKgaussianFilterZ;
 };
 
 MAKE_AUTO_CREATOR_ACTOR(FSThermalActor,GateFSThermalActor)

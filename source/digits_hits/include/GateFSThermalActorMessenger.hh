@@ -9,7 +9,6 @@
 /*
   \class GateThermalActorMessenger
   \brief This class is the GateThermalActor messenger. 
-  \author vesna.cuplov@gmail.com
   \author fsmekens@gmail.com
 */
 
@@ -34,17 +33,15 @@ public:
 
 protected:
   GateFSThermalActor * pThermalActor;
+  
   G4UIcmdWithADoubleAndUnit* pRelaxationTimeCmd;
   G4UIcmdWithADouble* pDiffusivityCmd;
-  
   G4UIcmdWithABool* pSetPerfusionRateByMaterialCmd;
   G4UIcmdWithADouble* pSetPerfusionRateByConstantCmd;
   G4UIcmdWithAString* pSetPerfusionRateByImageCmd;
   G4UIcmdWithADoubleAndUnit* pBloodDensityCmd;
   G4UIcmdWithADouble* pBloodHeatCapacityCmd;
   G4UIcmdWithADouble* pTissueHeatCapacityCmd;
-  G4UIcmdWithADouble* pScaleCmd;
-  G4UIcmdWithABool* pEnableWeightCmd;
   G4UIcmdWithABool* pEnableStepDiffusionCmd;
   G4UIcmdWithAString* pSetMeasurementFilenameCmd;
 };

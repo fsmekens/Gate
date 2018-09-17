@@ -9,7 +9,6 @@ See GATE/LICENSE.txt for further details
 /*
   \class GateThermalActorMessenger
   \brief This class is the GateThermalActor messenger. 
-  \author vesna.cuplov@gmail.com
   \author fsmekens@gmail.com
 */
 
@@ -36,9 +35,8 @@ GateFSThermalActorMessenger::GateFSThermalActorMessenger(GateFSThermalActor* sen
   pBloodDensityCmd = 0;
   pBloodHeatCapacityCmd = 0;
   pTissueHeatCapacityCmd = 0;
-  pScaleCmd = 0;
+  pEnableStepDiffusionCmd = 0;
   pSetMeasurementFilenameCmd = 0;
-
 
   BuildCommands(baseName+sensor->GetObjectName());
 }
@@ -56,7 +54,7 @@ GateFSThermalActorMessenger::~GateFSThermalActorMessenger()
   if(pBloodDensityCmd) delete pBloodDensityCmd;
   if(pBloodHeatCapacityCmd) delete pBloodHeatCapacityCmd;
   if(pTissueHeatCapacityCmd) delete pTissueHeatCapacityCmd;
-  if(pScaleCmd) delete pScaleCmd;
+  if(pEnableStepDiffusionCmd) delete pEnableStepDiffusionCmd;
   if(pSetMeasurementFilenameCmd) delete pSetMeasurementFilenameCmd;
 }
 //-----------------------------------------------------------------------------
@@ -65,7 +63,6 @@ GateFSThermalActorMessenger::~GateFSThermalActorMessenger()
 //-----------------------------------------------------------------------------
 void GateFSThermalActorMessenger::BuildCommands(G4String base)
 {
-
   pRelaxationTimeCmd = new G4UIcmdWithADoubleAndUnit((base+"/setRelaxationTime").c_str(),this);
   pRelaxationTimeCmd->SetGuidance("Set the relaxation time applied after the simulation");
 
@@ -89,9 +86,6 @@ void GateFSThermalActorMessenger::BuildCommands(G4String base)
 
   pTissueHeatCapacityCmd = new G4UIcmdWithADouble((base+"/setTissueHeatCapacity").c_str(),this);
   pTissueHeatCapacityCmd->SetGuidance("Set the tissue heat capacity");
-
-  pScaleCmd = new G4UIcmdWithADouble((base+"/setSimulationScale").c_str(),this);
-  pScaleCmd->SetGuidance("Set simulation scale");
   
   pEnableStepDiffusionCmd = new G4UIcmdWithABool((base+"/enableStepDiffusion").c_str(),this);
   pEnableStepDiffusionCmd->SetGuidance("Enable time-dependent diffusion");
@@ -113,7 +107,6 @@ void GateFSThermalActorMessenger::SetNewValue(G4UIcommand* cmd, G4String newValu
   if(cmd == pBloodDensityCmd) pThermalActor->setBloodDensity(  G4UIcmdWithADoubleAndUnit::GetNewDoubleValue(newValue)  );
   if(cmd == pBloodHeatCapacityCmd) pThermalActor->setBloodHeatCapacity(  G4UIcmdWithADouble::GetNewDoubleValue(newValue) * joule/(kg*kelvin) );
   if(cmd == pTissueHeatCapacityCmd) pThermalActor->setTissueHeatCapacity(  G4UIcmdWithADouble::GetNewDoubleValue(newValue) * joule/(kg*kelvin) );
-  if(cmd == pScaleCmd) pThermalActor->setScale(  G4UIcmdWithADouble::GetNewDoubleValue(newValue)  );
   if(cmd == pEnableStepDiffusionCmd) pThermalActor->enableStepDiffusion(  G4UIcmdWithABool::GetNewBoolValue(newValue)  );
   if(cmd == pSetMeasurementFilenameCmd) pThermalActor->SetMeasurementFilename(  newValue  );
 
@@ -123,4 +116,4 @@ void GateFSThermalActorMessenger::SetNewValue(G4UIcommand* cmd, G4String newValu
 
 #endif /* end #define GATEThermalActorMESSENGER_CC */
 
-#endif // end define USE_ITK
+#endif /* end #define USE_ITK */
